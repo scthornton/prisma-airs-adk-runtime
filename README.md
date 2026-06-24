@@ -5,6 +5,8 @@ agents, with **no gateway or proxy in the path**. The integration is a small set
 ADK callbacks that scan prompts, model responses, and tool calls/results against the
 Prisma AIRS AI Runtime API and block in-process.
 
+**Unofficial example. Not a Palo Alto Networks product and not supported by Palo Alto Networks. Provided as-is, without warranty, for reference and testing only.**
+
 ```
                  your ADK agent
    user  ->  before_model_callback  ->  model  ->  after_model_callback  ->  user
@@ -22,7 +24,12 @@ Because the scan happens inside the agent, AIRS sees not just prompt and respons
 but the **tool calls themselves** (as AIRS `tool_event`s), which a model-proxy gateway
 cannot. That makes this the stronger pattern for agentic / tool-using workloads.
 
-> Independent community reference example. Not an official Palo Alto Networks project.
+## Disclaimer and support
+
+This is an independent, community-maintained **example**, created to illustrate the
+integration pattern. It is **not a Palo Alto Networks product**, is **not supported by
+Palo Alto Networks** (or by the author), and is provided **as-is, without warranty of
+any kind**. Review and harden it yourself before any production use.
 
 ## Why no gateway
 
@@ -46,16 +53,29 @@ Detections come from your AIRS security profile: prompt injection, jailbreaks, t
 content, malicious code and URLs, sensitive-data / DLP, and agent / tool-call threats
 (context poisoning, malicious tool invocation, credential leakage).
 
-## Quick start
+## Try it in 2 minutes
+
+You only need your AIRS API key and profile name. **No model or LLM key is required** -
+the check uses a built-in fake model, so it runs anywhere.
 
 ```bash
+git clone https://github.com/scthornton/prisma-airs-adk-runtime
+cd prisma-airs-adk-runtime
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env       # set AIRS_API_KEY and AIRS_API_PROFILE_NAME
 
-# verify the integration against your AIRS tenant (uses a fake model, no LLM key needed)
+export AIRS_API_KEY="<your x-pan-token from Strata Cloud Manager>"
+export AIRS_API_PROFILE_NAME="<your AIRS security profile name>"
+
 python verify.py
+```
 
-# run a real example agent (defaults to Gemini; needs GOOGLE_API_KEY)
+You should see a benign prompt allowed, and a prompt injection, a harmful response, and
+a malicious tool call each blocked by AIRS - all inside a running ADK agent.
+
+To run a real agent against a live model (defaults to Gemini, needs `GOOGLE_API_KEY`):
+
+```bash
 python example_agent.py
 ```
 
