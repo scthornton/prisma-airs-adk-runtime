@@ -5,12 +5,15 @@ surface = "mac"
 proves  = "In-process coverage a gateway cannot give you: AIRS scans the prompt, the response, the tool call BEFORE it executes, and the tool result. verify.py uses a fake model, so no LLM key is needed."
 
 [run]
-launch = "python verify.py"
+# Source the lab's own .env rather than depending on ambient shell state:
+# AIRS_PROFILE_NAME is a deliberate on/off toggle in ~/.zshrc for the Claude
+# Code hooks, so a lab must not assume any AIRS var is exported.
+launch = "set -a && . ./.env && set +a && .venv/bin/python verify.py"
+oneshot = true   # runs to completion and exits; there is nothing to tear down
 ports  = []
 
 [requires]
-env   = ["AIRS_API_KEY", "AIRS_API_PROFILE_NAME"]
-files = ["requirements.txt"]
+files = [".env", ".venv/bin/python"]   # venv is the lab's own; uv venv .venv && uv pip install -r requirements.txt
 bin   = ["python3"]
 
 [demo]
