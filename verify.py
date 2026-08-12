@@ -6,7 +6,15 @@ so results depend only on the AIRS + ADK wiring (not on any LLM backend).
     python verify.py
 """
 import asyncio
+import logging
 import os
+
+# FakeLlm deliberately returns no usage_metadata (it makes no network call), so
+# ADK's telemetry logs "Skipping missing token usage metadata" on every turn.
+# That is guaranteed noise for this script and it lands on stderr AFTER the
+# results, which reads badly in a demo. Silence just that logger; every other
+# logger, and any real traceback, is untouched.
+logging.getLogger("google_adk.google.adk.telemetry._metrics").setLevel(logging.ERROR)
 
 from google.adk.agents import Agent
 from google.adk.models import BaseLlm, LlmResponse
