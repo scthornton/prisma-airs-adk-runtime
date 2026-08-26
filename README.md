@@ -129,11 +129,63 @@ Reproduce with `python verify.py`.
 | `timeout` | `30.0` | per-scan timeout, seconds |
 | `fail_open` | `False` | if True, allow on scan error; default is fail-closed (block) |
 | `block_message` | safe text | message returned to the agent on a block |
+| `tool_profile_name` | `AIRS_TOOL_PROFILE_NAME`, else `profile_name` | security profile used for tool_event scans |
+| `skip_tools` | `{"transfer_to_agent"}` | tool names never sent to AIRS |
+
+## Give the tool layer its own profile
+
+The model layer and the tool layer see different content and need different policy.
+Point `tool_profile_name` at a profile that does **not** include the Source Code DLP
+data pattern and does **not** carry conversational custom topics:
+
+```python
+guard = AirsGuard(tool_profile_name="my-app-tool-layer")
+```
+
+Keep prompt injection, malicious code, URL, toxic content, and real PII/PHI DLP on.
+
+**Why.** Tool arguments are JSON with identifier-style keys by protocol definition, and
+the DLP source-code detector reads that as code: `{"agent_name": "Billing_Agent"}` and
+`{"member_id": "A12345"}` both block as `source_code`, while `{"city": "Philadelphia"}`
+passes. It is a classifier rather than a regex, so renaming arguments is not a reliable
+workaround. Separately, custom topics authored for user conversation have almost nothing
+to classify in a short tool payload and will guess. Verified live 2026-08-24.
+
+## Orchestration hops are not scanned
+
+`skip_tools` defaults to `{"transfer_to_agent"}` - the agent framework's own sub-agent
+delegation primitive. It is not an MCP server tool: it is the framework talking to
+itself, and its arguments are pure orchestration metadata carrying no user content.
+Scanning it adds no security coverage while generating false positives, latency, and
+token spend. Add your own framework-internal control functions to the set as needed.
+
+Real MCP server tools and application tools are unaffected and still scanned on both
+the call and the result.
+
+## Reading a block
+
+A tool block now reports which detector actually fired:
+
+```json
+{"error": "Tool call blocked by security policy",
+ "airs_scan_id": "9663975c-...",
+ "airs_detections": ["source_code"]}
+```
+
+Use `airs_detections`. Do **not** read `tool_detected.summary.threats`: AIRS stamps
+`"context poisoning"` there for *any* malicious tool_event verdict, even when the only
+detection is `source_code`. That label is the reason DLP and topic misfires are
+routinely reported as prompt injection.
 
 ## Notes
 
 - **Fail-closed by default.** If the AIRS service cannot be reached, requests are
   blocked rather than passed unprotected. Set `fail_open=True` to invert this.
+  Note the operational consequence: if the API key is revoked or removed, every
+  request blocks. Alert on a sustained block rate rather than discovering it from users.
+- **The call arguments are scanned once.** `before_tool` scans the arguments;
+  `after_tool` scans only the result. Sending both at both points doubles token cost
+  and latency and gives the same content two chances to false-positive.
 - **Regions.** Set `AIRS_API_BASE` to the regional scan endpoint that matches your
   tenant (US, EU/Germany, India, Singapore).
 - **DLP.** To block sensitive data, the AIRS security profile must actually select the
