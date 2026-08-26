@@ -189,7 +189,7 @@ class AirsGuard:
         The call arguments are deliberately NOT resent here: before_tool already
         scanned them. Sending both would double the token cost and latency and give
         the same content two chances to false-positive."""
-        if self._skip(tool):
+        if self._skip(tool) or self._is_own_block(tool_response):
             return None
         verdict = await self._scan(
             self._tool_event(tool, result=tool_response), self.tool_profile_name
@@ -201,6 +201,19 @@ class AirsGuard:
     def _skip(self, tool: Any) -> bool:
         """True for framework-internal orchestration hops (see DEFAULT_SKIP_TOOLS)."""
         return getattr(tool, "name", "") in self.skip_tools
+
+    @staticmethod
+    def _is_own_block(tool_response: Any) -> bool:
+        """True if this 'tool result' is a block payload we produced ourselves.
+
+        When before_tool blocks, the block dict becomes the tool result, and ADK then
+        hands that same dict to after_tool. Rescanning it sends our own error message
+        back to AIRS: a wasted scan, a duplicate log entry, and - because the payload
+        is JSON with underscore keys like airs_scan_id - a second source_code block on
+        top of the first. Verified 2026-08-26."""
+        return isinstance(tool_response, dict) and (
+            "airs_scan_id" in tool_response or tool_response.get("airs_scan_error") is True
+        )
 
     @staticmethod
     def _blocked_tool(message: str, verdict: dict) -> dict:
