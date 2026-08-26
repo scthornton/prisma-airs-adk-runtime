@@ -76,6 +76,9 @@ class AirsGuard:
         timeout: float = 30.0,
         fail_open: bool = False,
         block_message: str = "This request was blocked by security policy.",
+        scan_error_message: str = (
+            "This request could not be completed: the security scan did not finish."
+        ),
         tool_profile_name: Optional[str] = None,
         skip_tools: Optional[Iterable[str]] = None,
     ):
@@ -85,6 +88,7 @@ class AirsGuard:
         self.timeout = timeout
         self.fail_open = fail_open
         self.block_message = block_message
+        self.scan_error_message = scan_error_message
         self.tool_profile_name = (
             tool_profile_name
             or os.environ.get("AIRS_TOOL_PROFILE_NAME")
@@ -116,15 +120,25 @@ class AirsGuard:
                 return resp.json()
         except Exception as exc:  # noqa: BLE001 - any transport/HTTP error
             # fail-closed by default: treat an unreachable scanner as a block.
+            # `_scan_error` marks this as an infrastructure failure rather than a
+            # policy decision, so the two are never reported to the user as the
+            # same thing. A scan that timed out is not a prompt that was refused.
             return {"action": "allow" if self.fail_open else "block",
-                    "category": "scan_error", "_error": str(exc)}
+                    "category": "scan_error", "_scan_error": True,
+                    "_error": str(exc)}
 
     @staticmethod
     def _is_block(verdict: dict) -> bool:
-        if verdict.get("action") == "block":
-            return True
-        td = verdict.get("tool_detected") or {}
-        return td.get("verdict") == "malicious"
+        """Enforce ONLY on `action`, which is AIRS applying the security profile.
+
+        Do not enforce on `category` or `tool_detected.verdict`. Those are detection
+        statements, not policy decisions: a profile with a detector set to allow or
+        alert returns action="allow" alongside category="malicious" and
+        tool_detected.verdict="malicious". Enforcing on the verdict overrides the
+        customer's own profile - setting a detector to Allow would have no effect,
+        which is indistinguishable from the product ignoring their configuration.
+        Verified 2026-08-26."""
+        return verdict.get("action") == "block"
 
     # ---- model callbacks ----------------------------------------------------
 
@@ -190,14 +204,41 @@ class AirsGuard:
 
     @staticmethod
     def _blocked_tool(message: str, verdict: dict) -> dict:
-        """Block payload returned to the agent. Includes which detector actually fired
-        so a DLP or topic misfire is distinguishable from a real threat without
-        pulling the scan from SCM."""
-        return {
+        """Payload returned to the agent when a tool call is stopped.
+
+        Reports WHY, not just THAT. Three cases must be tellable apart by whoever
+        reads the log: a scan that never completed, a policy block, and which
+        detector drove that block. Collapsing them into one string leaves an
+        operator with no way to tune, audit, or write an exception."""
+        if verdict.get("_scan_error"):
+            return {
+                "error": "Tool call stopped: AIRS scan did not complete",
+                "airs_scan_error": True,
+                "airs_fail_mode": "closed",
+                "airs_detail": verdict.get("_error"),
+            }
+        out = {
             "error": message,
             "airs_scan_id": verdict.get("scan_id"),
             "airs_detections": AirsGuard._fired_detections(verdict),
         }
+        topics = AirsGuard._blocked_topics(verdict)
+        if topics:
+            out["airs_blocked_topics"] = topics
+        return out
+
+    @staticmethod
+    def _blocked_topics(verdict: dict) -> list:
+        """Custom topic guardrails that fired, so an operator can see which topic to
+        tune rather than guessing from a generic topic_violation flag."""
+        td = verdict.get("tool_detected") or {}
+        for side in ("input_detected", "output_detected"):
+            entries = (td.get(side) or {}).get("detection_entries") or []
+            for e in entries:
+                g = (e.get("details") or {}).get("topic_guardrails_details") or {}
+                if g.get("blocked_topics"):
+                    return list(g["blocked_topics"])
+        return []
 
     # ---- helpers ------------------------------------------------------------
 
@@ -256,14 +297,32 @@ class AirsGuard:
         return []
 
     def _blocked_response(self, verdict: dict, is_response: bool = False) -> LlmResponse:
+        stage = "response" if is_response else "prompt"
+        if verdict.get("_scan_error"):
+            return LlmResponse(
+                content=types.Content(
+                    role="model", parts=[types.Part(text=self.scan_error_message)]
+                ),
+                custom_metadata={
+                    "airs_blocked": True,
+                    "airs_stage": stage,
+                    "airs_scan_error": True,
+                    "airs_fail_mode": "closed",
+                    "airs_detail": verdict.get("_error"),
+                },
+            )
+        # Which detectors fired on the side that was actually scanned. Without this
+        # an operator sees only "blocked" and cannot tune, audit, or except it.
+        side = verdict.get(f"{stage}_detected") or {}
         return LlmResponse(
             content=types.Content(
                 role="model", parts=[types.Part(text=self.block_message)]
             ),
             custom_metadata={
                 "airs_blocked": True,
-                "airs_stage": "response" if is_response else "prompt",
+                "airs_stage": stage,
                 "airs_category": verdict.get("category"),
                 "airs_scan_id": verdict.get("scan_id"),
+                "airs_detections": sorted(k for k, v in side.items() if v),
             },
         )

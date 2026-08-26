@@ -53,6 +53,48 @@ So the logs said "context poisoning," the app said "blocked by security policy,"
 everyone reasonably concluded the system was catching prompt injection attacks. It was
 not. The injection detector never fired once.
 
+## The second problem: "allow" did not allow
+
+Separately, you reported that it made no difference whether a detector was set to Block
+or to Allow - if inspection was on at all, the request still would not go through.
+
+That was also us, and it was a one-line mistake.
+
+When AIRS inspects something it tells you two different things:
+
+- **What it saw** - "this looks malicious"
+- **What to do about it** - "allow" or "block", decided by *your* security profile
+
+Our code was reading the first one and ignoring the second. So when you set a detector to
+Allow, AIRS correctly answered "allow" - and our integration blocked anyway, because it
+was looking at the observation instead of the decision.
+
+That is why turning the detector off was the only thing that worked. Turning it off was
+the only way to stop the observation from being made in the first place.
+
+**Your security profile is now the authority.** Set a detector to Allow or Alert and it
+allows. We verified this both ways: a profile set to Allow now passes traffic that it
+previously stopped, and a profile set to Block still blocks a genuine attack.
+
+## The third problem: a failed scan looked like a refused request
+
+If the scan could not finish - a timeout, a network problem, an expired key - our code
+reported it with the same sentence as a policy decision: "blocked by security policy."
+
+Those are completely different events. One means your content was examined and refused.
+The other means the examination never happened. They now say so:
+
+```
+"Tool call stopped: AIRS scan did not complete"
+"airs_scan_error": true
+"airs_fail_mode": "closed"
+```
+
+Worth knowing: the system is deliberately set to **fail closed**, so if inspection cannot
+run, the request is stopped rather than passed through unchecked. That is the right
+default for a security control, but it does mean an outage looks like a wall of blocks.
+Now you can tell which is which at a glance.
+
 ## What we changed
 
 **1. We stopped sending the internal sticky notes to AIRS.** `transfer_to_agent` is your
@@ -74,9 +116,15 @@ were sent for inspection twice - once before the tool ran and once after. Now th
 arguments are checked once and the result is checked once. Half the calls, half the
 delay, and half the chances of a mistaken block.
 
+**5. Your security profile now decides, not our code.** Allow means allow. See above.
+
+**6. A failed scan no longer reports itself as a policy block.** See above.
+
 ## What this means for you
 
 - The false positives on agent handoffs are gone.
+- Setting a detector to Allow or Alert now works, so you should not need to disable
+  prompt injection to keep an agent usable. Please re-enable it and tell us what you see.
 - Real security coverage is unchanged. Prompt injection, malicious code, toxic content,
   bad URLs, and sensitive data detection all still run on every real tool call and every
   model conversation. We tested this: a genuine injection attempt hidden in tool
@@ -97,5 +145,5 @@ arguments.
 
 ---
 
-Verified against a live AIRS tenant on 2026-08-24. Run `python verify.py` to reproduce;
-checks `[5a]` through `[5c]` cover exactly this issue.
+Verified against a live AIRS tenant on 2026-08-26. Run `python verify.py` to reproduce;
+checks `[5a]` through `[7]` cover exactly these issues.
